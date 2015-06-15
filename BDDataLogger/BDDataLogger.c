@@ -1,21 +1,35 @@
+#include <math.h>
+#include <stdlib.h>
+#include <inttypes.h>
+#include <avr/io.h>
+#include <avr/interrupt.h>
+#include "Arduino.h" // for digitalWrite
+
 #include "BDDataLogger.h"
 
 #define DEV_ADDR 0b10100000
 #define MAX_PAGE_VALUE 2048	//2^11 pages
-#define TWI_BUFFER_SIZE 518	//512 + 6
+#define TWI_BUFFER_SIZE 256	//512
+#define HIGH_LEVEL_MARK 128
 #define TWI_TWBR            0x0C        // TWI Bit rate Register setting. Set to 400 kHz
                                         // See Application note for detailed 
                                         // information on setting this value.
-static uint8_t TWI_buf[ TWI_BUFFER_SIZE ];    // Transceiver buffer
-static uint16_t buf_rd_pos;
-static uint16_t buf_wr_pos;
-static uint16_t DL_wr_page;
-static uint16_t DL_rd_page;
 
-static unsigned char TWI_state = TWI_NO_STATE;      // State byte. Default set to TWI_NO_STATE.
+static uint8_t buf_1[TWI_BUFFER_SIZE];
+static uint8_t buf_2[TWI_BUFFER_SIZE];																			
+static volatile uint8_t *wr_buffer;
+static volatile uint8_t *rd_buffer;
+static volatile uint8_t *temp_buffer;
+static volatile uint8_t buf_wr_pos;
+static uint16_t page_wr_addr;
+static uint16_t page_rd_addr;
+static uint8_t addr_buf[3];
+static volatile uint8_t ready_to_save_flag;
 
+static volatile unsigned char TWI_state = TWI_NO_STATE;      // State byte. Default set to TWI_NO_STATE.
 union TWI_statusReg TWI_statusReg = {0};            // TWI_statusReg is defined in TWI_Master.h
 static uint16_t TWI_msgSize;
+static volatile uint8_t operation;
 
 /****************************************************************************
 Call this function to set up the TWI master to its initial standby state.
@@ -33,13 +47,65 @@ void DL_Initialise(void)
          (0<<TWWC);                                 //
 	
 	//set the buffer and eeprom addresses to 0
-	buf_rd_pos = (uint16_t)0;
-	buf_wr_pos = (uint16_t)3;
-	page_wr_addr = (uint16_t)0;
-	page_rd_addr = (uint16_t)0;
+	wr_buffer = buf_1;
+	rd_buffer = buf_2;
+	buf_wr_pos = 0;
+	page_wr_addr = 0;
+	page_rd_addr = 0;
+	ready_to_save_flag = 0;
 		//TODO: find location of DL_Wr_page;
 }
 
+void DL_Write_Page( void )
+{
+	//set select and address bytes
+  while ( TWI_Transceiver_Busy() );             // Wait until TWI is ready for next transmission.
+	addr_buf[0] = (uint8_t) (DEV_ADDR | (page_wr_addr>>8)<<1);	//highest three bits of address, bit shifted left 1 for r/w bit
+	addr_buf[1] = (uint8_t)(page_wr_addr);
+	addr_buf[2] = (uint8_t) 0;	//always at start of page
+	page_wr_addr++;	//increment write page address
+	TWI_msgSize = TWI_BUFFER_SIZE;
+	ready_to_save_flag = 0;	//reset flag
+	operation = 0;
+  TWI_statusReg.all = 0;
+  TWI_state = TWI_NO_STATE ;
+	sbi(PORTB, 5);
+  TWCR = (1<<TWEN)|                             // TWI Interface enabled.
+         (1<<TWIE)|(1<<TWINT)|                  // Enable TWI Interupt and clear the flag.
+         (0<<TWEA)|(1<<TWSTA)|(0<<TWSTO)|       // Initiate a START condition.
+         (0<<TWWC);                             //
+}
+
+/****************************************************
+Call from main application to read page. Any data not
+stored will be deleted, so it is best to call DL_Flush_All()
+before this.
+****************************************************/
+uint8_t DL_Read_Page( void )
+{
+  while ( TWI_Transceiver_Busy() );             // Wait until TWI is ready for next transmission.	
+	if (page_rd_addr >= page_wr_addr)
+		return 0;
+  addr_buf[0] = (uint8_t) (DEV_ADDR | (page_rd_addr>>8)<<1);	//highest three bits of address, bit shifted left 1 for r/w bit
+	addr_buf[1] = (uint8_t)(page_rd_addr);
+	addr_buf[2] = (uint8_t) 0;	//always at start of page
+	page_rd_addr++;	//increment write page address
+	TWI_msgSize = 256;	//no message, just writing address
+  TWI_statusReg.all = 0;
+  TWI_state = TWI_NO_STATE ;
+	operation = 1;
+  TWCR = (1<<TWEN)|                             // TWI Interface enabled.
+         (1<<TWIE)|(1<<TWINT)|                  // Enable TWI Interupt and clear the flag.
+         (0<<TWEA)|(1<<TWSTA)|(0<<TWSTO)|       // Initiate a START condition.
+         (0<<TWWC);                            //
+	__asm__("nop\n\t"); 
+	while ( TWI_Transceiver_Busy() );             // Wait until TWI is ready for next transmission.
+	return 1;	
+	}
+
+/***************************************
+Called from main application to write a data packet
+**************************************/
 void DL_Write(uint8_t data_type, uint32_t d32, uint16_t d16)
 {
 	write_byte(data_type);
@@ -50,20 +116,95 @@ void DL_Write(uint8_t data_type, uint32_t d32, uint16_t d16)
 	write_byte((uint8_t) (d16>>8));
 	write_byte((uint8_t) (d16));
 	
-	if (buf_rd_pos == 0 && buf_wr_pos > 384) || (buf_rd_pos == 256 && buf_wr_pos > 128)
-		DL_write_page();
+	//if the write buffer is greater than some threshold, 
+	//start doing a save
+	if (ready_to_save_flag && buf_wr_pos > HIGH_LEVEL_MARK)
+		DL_Write_Page();
 }
 
+/***********************************************
+Call this function to swap read and write buffers 
+and set the ready_to_save_flag.
+***********************************************/
+void swap_buffers(void){
+  while ( TWI_Transceiver_Busy() );             // Wait until TWI has completed the transmission.
+	temp_buffer = rd_buffer;
+	rd_buffer = wr_buffer;
+	wr_buffer = temp_buffer;
+	ready_to_save_flag = 1;
+}
+
+/*********************************************
+Store byte in wr_buffer, swapping buffers if it gets full.
+*********************************************/
 void write_byte(uint8_t data)
 {
-	if (buf_wr_pos == 131)
-		buff_wr_pos = 134;	//skip ahead to leave room for address bytes
-	if (buf_wr_pos == TWI_BUFFER_SIZE)
-		buff_wr_pos = 3; 		//skip ahead to leave room for address bytes
-	TWI_buf[buf_wr_pos] = data;
-	buff_wr_pos++;
+	wr_buffer[buf_wr_pos++] = data;
+	if (buf_wr_pos == 0)
+		swap_buffers();
 }
 
+uint16_t DL_Page_Read_Addr(void){
+	return page_rd_addr;
+}
+
+uint16_t DL_Page_Write_Addr(void){
+	return page_wr_addr;
+}
+
+uint8_t DL_Buffer_Wr_Pos(void){
+	return buf_wr_pos;
+}
+
+uint8_t * DL_Get_Wr_Buffer(void){
+	return wr_buffer;
+}
+
+uint8_t * DL_Get_Rd_Buffer(void){
+	return rd_buffer;
+}
+
+void DL_Clear_Buffers(void){
+	uint16_t i;
+	for (i = 0; i<256; i ++){
+		wr_buffer[i] = 0;
+		rd_buffer[i] = 0;
+	}
+}
+
+/************************************
+Called by the main application if there is some "down time"
+to write the data to EEPROM if one of the buffers is full.
+************************************/
+void DL_Safe_To_Write( void )
+{
+	if(ready_to_save_flag)
+		DL_Write_Page();
+}
+
+/*******************************************************
+Flush all data waiting to be written.
+*******************************************************/
+uint8_t DL_Flush_All( void ){
+	uint8_t retval = 0;
+	if (ready_to_save_flag)	//one buffer is full but hasn't yet been stored to the EEPROM
+	{
+		DL_Write_Page();
+		retval = 127;
+	}
+	if(buf_wr_pos > 0)		//there is data in the second partially-filled buffer to write
+	{
+		swap_buffers();
+		DL_Write_Page();
+		retval = retval | 0b11110000;
+		buf_wr_pos = 0;
+	}
+	return retval;
+}
+
+uint8_t DL_get_value(uint8_t index){
+	return *(rd_buffer+index);
+}
 /****************************************************************************
 Call this function to test if the TWI_ISR is busy transmitting.
 ****************************************************************************/
@@ -83,46 +224,47 @@ unsigned char TWI_Get_State_Info( void )
   return ( TWI_state );                         // Return error state.
 }
 
-
-/****************************************************************************
-Call this function to resend the last message. The driver will reuse the data previously put in the transceiver buffers.
-The function will hold execution (loop) until the TWI_ISR has completed with the previous operation,
-then initialize the next operation and return.
-****************************************************************************/
-void DL_write_page( void )
-{
-	//set select and addres bytes
-	TWI_buf[buf_rd_pos] = (uint8_t) (DEV_ADDR | (DL_rd_page>>16)<<1);	//highest three bits of address, bit shifted left 1 for r/w bit
-	TWI_buf[buf_rd_pos+1] = (uint8_t)(DL_rd_page>>8);
-	TWI_buf[buf_rd_pos+2] = (uint8_t) 0;	//always at start of page
-	TWI_msgSize = buf_rd_pos + 259;
-  while ( TWI_Transceiver_Busy() );             // Wait until TWI is ready for next transmission.
-  TWI_statusReg.all = 0;      
-  TWI_state = TWI_NO_STATE ;
-  TWCR = (1<<TWEN)|                             // TWI Interface enabled.
-         (1<<TWIE)|(1<<TWINT)|                  // Enable TWI Interupt and clear the flag.
-         (0<<TWEA)|(1<<TWSTA)|(0<<TWSTO)|       // Initiate a START condition.
-         (0<<TWWC);                             //
-}
-
 // ********** Interrupt Handlers ********** //
 /****************************************************************************
 This function is the Interrupt Service Routine (ISR), and called when the TWI interrupt is triggered;
 that is whenever a TWI event has occurred. This function should not be called directly from the main
 application.
 ****************************************************************************/
-#pragma vector=TWI_vect
-__interrupt void TWI_ISR(void)
+//#pragma vector=TWI_vect
+//__interrupt void TWI_ISR(void)
+ISR(TWI_vect)
 { 
+	static volatile uint8_t addr_ptr;
+	static volatile uint16_t data_ptr;
+	
   switch (TWSR)
   {
-    case TWI_START:             // START has been transmitted  
+    case TWI_START:             // START has been transmitted
     case TWI_REP_START:         // Repeated START has been transmitted
+			addr_ptr = 0;
+			data_ptr = 0;
     case TWI_MTX_ADR_ACK:       // SLA+W has been transmitted and ACK received
     case TWI_MTX_DATA_ACK:      // Data byte has been transmitted and ACK received
-      if (buf_rd_pos < TWI_msgSize)
-      {
-        TWDR = TWI_buf[buf_rd_pos++];
+			if (addr_ptr < 3 && operation < 2){
+				TWDR = addr_buf[addr_ptr++];
+				TWCR = (1<<TWEN)|                               // TWI Interface enabled
+						 (1<<TWIE)|(1<<TWINT)|                      // Enable TWI Interupt and clear the flag to send byte
+						 (0<<TWEA)|(0<<TWSTA)|(0<<TWSTO)|           //
+						 (0<<TWWC);                               
+			}else if(operation == 1){ //read phase 1
+				operation = 2;
+				TWCR = (1<<TWEN)|                         // TWI Interface enabled.
+					 (1<<TWIE)|(1<<TWINT)|                  // Enable TWI Interupt and clear the flag.
+					 (0<<TWEA)|(1<<TWSTA)|(0<<TWSTO)|       // Initiate a Repeated START condition.
+					 (0<<TWWC);     		
+			}else if(operation == 2){	//read phase 2
+				TWDR = addr_buf[0] | 0b00000001;	//change to read device select
+				TWCR = (1<<TWEN)|                               // TWI Interface enabled
+						 (1<<TWIE)|(1<<TWINT)|                      // Enable TWI Interupt and clear the flag to send byte
+						 (0<<TWEA)|(0<<TWSTA)|(0<<TWSTO)|           //
+						 (0<<TWWC);      
+			}else if (data_ptr < TWI_msgSize){
+				TWDR = rd_buffer[data_ptr++];
         TWCR = (1<<TWEN)|                                 // TWI Interface enabled
                (1<<TWIE)|(1<<TWINT)|                      // Enable TWI Interupt and clear the flag to send byte
                (0<<TWEA)|(0<<TWSTA)|(0<<TWSTO)|           //
@@ -136,10 +278,10 @@ __interrupt void TWI_ISR(void)
                (0<<TWWC);                                 //
       }
       break;
-    case TWI_MRX_DATA_ACK:      // Data byte has been received and ACK tramsmitted
-      TWI_buf[TWI_bufPtr++] = TWDR;
-    case TWI_MRX_ADR_ACK:       // SLA+R has been tramsmitted and ACK received
-      if (TWI_bufPtr < (TWI_msgSize-1) )                  // Detect the last byte to NACK it.
+    case TWI_MRX_DATA_ACK:      // Data byte has been received and ACK transmitted
+			rd_buffer[data_ptr++] = TWDR;
+		case TWI_MRX_ADR_ACK:       // SLA+R has been transmitted and ACK received
+      if (data_ptr < (TWI_msgSize-1) )                  // Detect the last byte to NACK it.
       {
         TWCR = (1<<TWEN)|                                 // TWI Interface enabled
                (1<<TWIE)|(1<<TWINT)|                      // Enable TWI Interupt and clear the flag to read next byte
@@ -153,8 +295,8 @@ __interrupt void TWI_ISR(void)
                (0<<TWWC);                                 // 
       }    
       break; 
-    case TWI_MRX_DATA_NACK:     // Data byte has been received and NACK tramsmitted
-      TWI_buf[TWI_bufPtr] = TWDR;
+    case TWI_MRX_DATA_NACK:     // Data byte has been received and NACK transmitted
+      rd_buffer[data_ptr] = TWDR;
       TWI_statusReg.lastTransOK = TRUE;                 // Set status bits to completed successfully. 
       TWCR = (1<<TWEN)|                                 // TWI Interface enabled
              (0<<TWIE)|(1<<TWINT)|                      // Disable TWI Interrupt and clear the flag
@@ -169,10 +311,16 @@ __interrupt void TWI_ISR(void)
       break;
     case TWI_MTX_ADR_NACK:      // SLA+W has been tramsmitted and NACK received
     case TWI_MRX_ADR_NACK:      // SLA+R has been tramsmitted and NACK received    
+			TWCR = (1<<TWEN)|                             // TWI Interface enabled.
+         (1<<TWIE)|(1<<TWINT)|                  // Enable TWI Interupt and clear the flag.
+         (0<<TWEA)|(1<<TWSTA)|(0<<TWSTO)|       // Initiate a START condition.
+         (0<<TWWC);                            //
+			break;
     case TWI_MTX_DATA_NACK:     // Data byte has been tramsmitted and NACK received
 //    case TWI_NO_STATE              // No relevant state information available; TWINT = “0”
     case TWI_BUS_ERROR:         // Bus error due to an illegal START or STOP condition
-    default:     
+    default:
+			cbi(PORTB, 5);
       TWI_state = TWSR;                                 // Store TWSR and automatically sets clears noErrors bit.
                                                         // Reset TWI Interface
       TWCR = (1<<TWEN)|                                 // Enable TWI-interface and release TWI pins
