@@ -4,6 +4,7 @@
 #include <avr/io.h>
 #include <avr/interrupt.h>
 #include "Arduino.h" // for digitalWrite
+#include "../BubbleDetector/BubbleDetector.h"
 
 #include "BDDataLogger.h"
 
@@ -15,8 +16,8 @@
                                         // See Application note for detailed 
                                         // information on setting this value.
 
-static uint8_t buf_1[TWI_BUFFER_SIZE];
-static uint8_t buf_2[TWI_BUFFER_SIZE];																			
+static volatile uint8_t buf_1[TWI_BUFFER_SIZE];
+static volatile uint8_t buf_2[TWI_BUFFER_SIZE];																			
 static volatile uint8_t *wr_buffer;
 static volatile uint8_t *rd_buffer;
 static volatile uint8_t *temp_buffer;
@@ -50,10 +51,83 @@ void DL_Initialise(void)
 	wr_buffer = buf_1;
 	rd_buffer = buf_2;
 	buf_wr_pos = 0;
-	page_wr_addr = 0;
+	page_wr_addr = MAX_PAGE_VALUE;
 	page_rd_addr = 0;
 	ready_to_save_flag = 0;
-		//TODO: find location of DL_Wr_page;
+	uint16_t i;
+	//find the end of the file
+	i = 0;
+	while (DL_Read_Page()){
+		while( i < 256){
+			if (rd_buffer[i] == 255)
+				break;
+			//each case should be a message type
+			//cases with the same size value are placed together with no "breaks"
+			switch(rd_buffer[i])
+			{ 
+				case MSG_EVENT_START:
+					i += SIZE_EVENT_START + 1;
+					break;
+				case MSG_EVENT_END:
+				case MSG_DET1_START:	
+				case MSG_DET2_START:
+				case MSG_DET3_START:
+				case MSG_DET1_END:
+				case MSG_DET2_END:	
+				case MSG_DET3_END:
+					i += SIZE_DET3_END + 1;
+					break;
+				case MSG_ERROR:
+					i += SIZE_ERROR;
+					break;
+				default:
+					i++;
+					break;
+			}
+		}
+		if (i > 255)
+			i = i-256;
+		else	//end of file
+		{
+			page_wr_addr = page_rd_addr - 1;
+			swap_buffers();
+			ready_to_save_flag = 0;
+			buf_wr_pos = i;
+			page_rd_addr = 0;
+			break;
+		}
+	}
+	page_rd_addr = 0;
+}
+
+//Call to erase memory
+//if it's called with True, then all memory is written to
+//else, it just erases up through the last write
+void DL_Clear_Memory( uint8_t total_clear){
+	
+	sbi(PORTB, 5);
+	uint16_t max_page_wr_addr = page_wr_addr;
+	if(total_clear)
+		max_page_wr_addr = MAX_PAGE_VALUE;
+
+	//fill buffer with 255
+	uint16_t i;
+	for ( i = 0; i < 256; i++)
+		rd_buffer[i] = 255;
+	
+	//do all writes
+	page_wr_addr = 0;
+	while (page_wr_addr < max_page_wr_addr){
+		DL_Write_Page();
+	}
+	
+	//reset state variables
+	page_rd_addr = 0;
+	page_wr_addr = 0;
+	buf_wr_pos = 0;
+	ready_to_save_flag = 0;
+	cbi(PORTB, 5);
+	
 }
 
 void DL_Write_Page( void )
@@ -66,10 +140,9 @@ void DL_Write_Page( void )
 	page_wr_addr++;	//increment write page address
 	TWI_msgSize = TWI_BUFFER_SIZE;
 	ready_to_save_flag = 0;	//reset flag
-	operation = 0;
+	operation = DL_WRITE;
   TWI_statusReg.all = 0;
   TWI_state = TWI_NO_STATE ;
-	sbi(PORTB, 5);
   TWCR = (1<<TWEN)|                             // TWI Interface enabled.
          (1<<TWIE)|(1<<TWINT)|                  // Enable TWI Interupt and clear the flag.
          (0<<TWEA)|(1<<TWSTA)|(0<<TWSTO)|       // Initiate a START condition.
@@ -84,7 +157,7 @@ before this.
 uint8_t DL_Read_Page( void )
 {
   while ( TWI_Transceiver_Busy() );             // Wait until TWI is ready for next transmission.	
-	if (page_rd_addr >= page_wr_addr)
+	if (page_rd_addr >= page_wr_addr || page_rd_addr == MAX_PAGE_VALUE)
 		return 0;
   addr_buf[0] = (uint8_t) (DEV_ADDR | (page_rd_addr>>8)<<1);	//highest three bits of address, bit shifted left 1 for r/w bit
 	addr_buf[1] = (uint8_t)(page_rd_addr);
@@ -93,7 +166,7 @@ uint8_t DL_Read_Page( void )
 	TWI_msgSize = 256;	//no message, just writing address
   TWI_statusReg.all = 0;
   TWI_state = TWI_NO_STATE ;
-	operation = 1;
+	operation = DL_READ_PHASE_1;
   TWCR = (1<<TWEN)|                             // TWI Interface enabled.
          (1<<TWIE)|(1<<TWINT)|                  // Enable TWI Interupt and clear the flag.
          (0<<TWEA)|(1<<TWSTA)|(0<<TWSTO)|       // Initiate a START condition.
@@ -104,17 +177,47 @@ uint8_t DL_Read_Page( void )
 	}
 
 /***************************************
-Called from main application to write a data packet
+Called from main application to write a 
+data packet of one uint32_t.
 **************************************/
-void DL_Write(uint8_t data_type, uint32_t d32, uint16_t d16)
+void DL_Write1(uint8_t data_type, uint32_t d32)
 {
 	write_byte(data_type);
 	write_byte((uint8_t) (d32>>24));
 	write_byte((uint8_t) (d32>>16));
 	write_byte((uint8_t) (d32>>8));
 	write_byte((uint8_t) (d32));
-	write_byte((uint8_t) (d16>>8));
-	write_byte((uint8_t) (d16));
+	
+	//if the write buffer is greater than some threshold, 
+	//start doing a save
+	if (ready_to_save_flag && buf_wr_pos > HIGH_LEVEL_MARK)
+		DL_Write_Page();
+}
+
+void DL_Write2(uint8_t data_type, uint32_t d32, uint16_t d1, uint16_t d2, uint16_t d3 )
+{
+	write_byte(data_type);
+	write_byte((uint8_t) (d32>>24));
+	write_byte((uint8_t) (d32>>16));
+	write_byte((uint8_t) (d32>>8));
+	write_byte((uint8_t) (d32));
+	write_byte((uint8_t) (d1>>8));
+	write_byte((uint8_t) (d1));
+	write_byte((uint8_t) (d2>>8));
+	write_byte((uint8_t) (d2));
+	write_byte((uint8_t) (d3>>8));
+	write_byte((uint8_t) (d3));
+	
+	//if the write buffer is greater than some threshold, 
+	//start doing a save
+	if (ready_to_save_flag && buf_wr_pos > HIGH_LEVEL_MARK)
+		DL_Write_Page();
+}
+
+void DL_Write3(uint8_t data_type, uint8_t d)
+{
+	write_byte(data_type);
+	write_byte(d);
 	
 	//if the write buffer is greater than some threshold, 
 	//start doing a save
@@ -194,10 +297,16 @@ uint8_t DL_Flush_All( void ){
 	}
 	if(buf_wr_pos > 0)		//there is data in the second partially-filled buffer to write
 	{
+		int16_t i;
+		//fill the remaining buffer up with 255
+		for (i = buf_wr_pos; i < 256; i++)
+			wr_buffer[i] = 255;
 		swap_buffers();
 		DL_Write_Page();
+		swap_buffers();	//we want to swap back so that if the user keeps storing data,
+										//it's in the correct buffer at the correct position buf_wr_pos
+		ready_to_save_flag = 0;	//swap_buffers set this to 1, but that data was actually already written so ignore
 		retval = retval | 0b11110000;
-		buf_wr_pos = 0;
 	}
 	return retval;
 }
@@ -245,19 +354,19 @@ ISR(TWI_vect)
 			data_ptr = 0;
     case TWI_MTX_ADR_ACK:       // SLA+W has been transmitted and ACK received
     case TWI_MTX_DATA_ACK:      // Data byte has been transmitted and ACK received
-			if (addr_ptr < 3 && operation < 2){
+			if (addr_ptr < 3 && operation < DL_READ_PHASE_2){
 				TWDR = addr_buf[addr_ptr++];
 				TWCR = (1<<TWEN)|                               // TWI Interface enabled
 						 (1<<TWIE)|(1<<TWINT)|                      // Enable TWI Interupt and clear the flag to send byte
 						 (0<<TWEA)|(0<<TWSTA)|(0<<TWSTO)|           //
 						 (0<<TWWC);                               
-			}else if(operation == 1){ //read phase 1
-				operation = 2;
+			}else if(operation == DL_READ_PHASE_1){ //read phase 1
+				operation = DL_READ_PHASE_2;
 				TWCR = (1<<TWEN)|                         // TWI Interface enabled.
 					 (1<<TWIE)|(1<<TWINT)|                  // Enable TWI Interupt and clear the flag.
 					 (0<<TWEA)|(1<<TWSTA)|(0<<TWSTO)|       // Initiate a Repeated START condition.
 					 (0<<TWWC);     		
-			}else if(operation == 2){	//read phase 2
+			}else if(operation == DL_READ_PHASE_2){	//read phase 2
 				TWDR = addr_buf[0] | 0b00000001;	//change to read device select
 				TWCR = (1<<TWEN)|                               // TWI Interface enabled
 						 (1<<TWIE)|(1<<TWINT)|                      // Enable TWI Interupt and clear the flag to send byte

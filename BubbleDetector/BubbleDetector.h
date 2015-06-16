@@ -3,8 +3,8 @@ Description:	Header file for all constants and definitions for
 				bubble detector code.
 
 Author: 		Schuyler Senft-Grupp
-Version: 		1.1
-Date: 			5/15/2013
+Version: 		2.0
+Date: 			6/15/2015
 
 **/
 
@@ -13,8 +13,29 @@ Date: 			5/15/2013
 
 #include <Arduino.h>
 
-const uint8_t MAX_NUMBER_BUBBLES = 4;  //The maximum number of bubbles that can be stored at the same time.
-const uint8_t NUM_BKGD_POINTS = 8;	//the number of background points to store
+//DEFINE THE DIFFERENT MESSAGE TYPES - they can be values between 1 and 254 - 0 and 255 are reserved
+#define MSG_EVENT_START 1
+#define MSG_EVENT_END 	2
+#define MSG_DET1_START	3
+#define MSG_DET2_START	4
+#define MSG_DET3_START	5
+#define MSG_DET1_END		6
+#define MSG_DET2_END		7
+#define MSG_DET3_END		8	
+#define MSG_ERROR				9
+
+//DEFINE THE SIZE OF EACH MESSAGE (in bytes)
+#define SIZE_EVENT_START 	10 //one uint32_t for millis and three uint16_t for the avg detector values
+#define SIZE_EVENT_END 		4	 //time just before sleep (1 uint32_t) millis()
+#define SIZE_DET1_START		4	 //time
+#define SIZE_DET2_START		4	 //time
+#define SIZE_DET3_START		4	 //time
+#define SIZE_DET1_END			4  //time
+#define SIZE_DET2_END			4  //time
+#define SIZE_DET3_END			4  //time
+#define SIZE_ERROR				1	 //8-bit error code
+
+#define NUM_BKGD_POINTS  8 	//the number of background points to store
 
 //bde stands for bubble detector error
 const uint8_t bdeTIMEOUT =         0b00000001;
@@ -32,9 +53,8 @@ const uint8_t bd3start = 3;
 const uint8_t bd3end = 4;
 const uint8_t bdError = 5;
 
-
 /*************************************************
-Declare structs to hold background measurements for each sensor
+Declare struct to hold background measurements for each sensor
 These use continuous ring buffers 
 *************************************************/
 struct backgrounddata{
@@ -46,35 +66,5 @@ struct backgrounddata{
   uint16_t startdetvalue;	//the value required to signify a bubble start event
   uint16_t enddetvalue;     //the value required to signify a bubble end event
 };
-
-/*************************************************
-Declare structs to hold event information
-*************************************************/
-struct eventinfo{
-  uint32_t eventTime;
-  uint8_t numBubbles; 				
-  uint8_t errorVal;
-  uint16_t det2avg;
-  uint16_t det2startval;
-  uint16_t det2endval;  
-  uint16_t det3avg;
-  uint16_t det3startval;
-  uint16_t det3endval;  
-};
-
-/*************************************************
-Declare structs to hold bubble information
-*************************************************/
-struct bubbledata{
-  uint32_t d2stime;
-  uint16_t d2sval;
-  uint32_t d2etime; 
-  uint16_t d2eval;
-  uint32_t d3stime; 
-  uint16_t d3sval;
-  uint32_t d3etime; 
-  uint16_t d3eval;
-};
-
 
 #endif
