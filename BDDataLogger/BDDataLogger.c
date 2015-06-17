@@ -51,7 +51,7 @@ void DL_Initialise(void)
 	wr_buffer = buf_1;
 	rd_buffer = buf_2;
 	buf_wr_pos = 0;
-	page_wr_addr = MAX_PAGE_VALUE;
+	page_wr_addr = MAX_PAGE_VALUE-1;
 	page_rd_addr = 0;
 	ready_to_save_flag = 0;
 	uint16_t i;
@@ -108,7 +108,7 @@ void DL_Clear_Memory( uint8_t total_clear){
 	sbi(PORTB, 5);
 	uint16_t max_page_wr_addr = page_wr_addr;
 	if(total_clear)
-		max_page_wr_addr = MAX_PAGE_VALUE;
+		max_page_wr_addr = MAX_PAGE_VALUE-1;
 
 	//fill buffer with 255
 	uint16_t i;
@@ -132,6 +132,8 @@ void DL_Clear_Memory( uint8_t total_clear){
 
 void DL_Write_Page( void )
 {
+	if (page_wr_addr >= MAX_PAGE_VALUE)
+			return;
 	//set select and address bytes
   while ( TWI_Transceiver_Busy() );             // Wait until TWI is ready for next transmission.
 	addr_buf[0] = (uint8_t) (DEV_ADDR | (page_wr_addr>>8)<<1);	//highest three bits of address, bit shifted left 1 for r/w bit
@@ -157,7 +159,7 @@ before this.
 uint8_t DL_Read_Page( void )
 {
   while ( TWI_Transceiver_Busy() );             // Wait until TWI is ready for next transmission.	
-	if (page_rd_addr >= page_wr_addr || page_rd_addr == MAX_PAGE_VALUE)
+	if (page_rd_addr > page_wr_addr)
 		return 0;
   addr_buf[0] = (uint8_t) (DEV_ADDR | (page_rd_addr>>8)<<1);	//highest three bits of address, bit shifted left 1 for r/w bit
 	addr_buf[1] = (uint8_t)(page_rd_addr);
