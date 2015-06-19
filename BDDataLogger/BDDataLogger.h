@@ -48,6 +48,7 @@ Date: 			6/15/2015
 	uint8_t * DL_Get_Rd_Buffer(void);
 	void DL_Clear_Memory( uint8_t );
 	void swap_buffers(void);
+	void DL_Reset_Read_Addr( void);
 	
 	void DL_Write1(uint8_t , uint32_t);
 	void DL_Write2(uint8_t, uint32_t, uint16_t, uint16_t, uint16_t);

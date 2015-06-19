@@ -44,7 +44,7 @@ const uint8_t detThree = A2;                 // Detector 3 ADC input
 const uint8_t LOOK_FOR_START = 0;
 const uint8_t LOOK_FOR_END = 1;
 
-const unsigned long MAX_TIMEOUT = 10000000;  // Maximum time allowed for data-collection sequence in milliseconds
+const unsigned long MAX_TIMEOUT = 3000000;  // Maximum time allowed for data-collection sequence in microseconds
 
 const uint16_t MIN_THRESHOLD = 30;	     // The minimum change in ADC value required to trigger data collection sequence
 
@@ -89,12 +89,12 @@ uint32_t tempTime;
  * PERFORM SETUP TASKS
  *****************************************************************************************/
 void setup() {
-  // Initialize pins
-  // DELETE THIS: It might be, that for power reasons these should be kept as inputs until they need
-  // DELETE THIS: to be used as outputs - check documentation
-  pinMode(ledOne, OUTPUT);
-  pinMode(ledTwo, OUTPUT);
-  pinMode(ledThree, OUTPUT);
+  //set LED pins to outputs
+  sbi(DDRD, LED_1_BIT);
+  sbi(DDRD, LED_2_BIT);
+  sbi(DDRD, LED_3_BIT);
+  
+  //set detector pins as inputs
   pinMode(detOne, INPUT);
   pinMode(detTwo, INPUT);
   pinMode(detThree, INPUT);
@@ -102,7 +102,7 @@ void setup() {
   //setup serial for debugging purposes
   Serial.begin(115200);               // Baud communication rate
   PrintName();
-  Serial.println("Parsing EEPROM...");
+  Serial.println("Parsing EEPROM...");  //this can take up to 30 seconds
   delay(100);
 
   analogReference(INTERNAL);          // Use the built-in reference voltage
@@ -183,9 +183,10 @@ void loop() {                                  // Create loop that checks if a b
             (uint16_t)detOneBkgd.total / NUM_BKGD_POINTS,
             (uint16_t)detTwoBkgd.total / NUM_BKGD_POINTS,
             (uint16_t)detThreeBkgd.total / NUM_BKGD_POINTS);
+  DL_Write1(MSG_DET1_START , micros());
 
   // Turn on all three LEDs
-  PORTD |= (1 << LED_1_BIT | 1 << LED_2_BIT | 1 << LED_3_BIT);
+  PORTD |= (1 << LED_1_BIT) | (1 << LED_2_BIT) | (1 << LED_3_BIT);
   delayMicroseconds(100);                    // Delay necessary to allow phototransistors to stabilize
 
   numBubblesInTube = 1;                      // Initially set to 1 because the first bubble has been detected
@@ -257,8 +258,17 @@ void loop() {                                  // Create loop that checks if a b
     if (tempTime < timeoutClockStart) { //micros overflow
       timeoutClockStart = 0;  //just set to zero
     }
+    
+    //because this could infinite loop, allow a specific serial communication to break out of it
+    if (Serial.available() > 0) {              // Allows for communication between Arduino and computer if connected
+      char c = Serial.read();
+      if (c == 'A')
+        delay(1000);//delay 1 second to allow second character to be sent
+        break;  //break out of while loop
+    }
   }
-
+  DL_Write1(MSG_EVENT_END, millis());
+  
   /****************************************************************************************
    * STORE DATA
    *****************************************************************************************/
@@ -266,7 +276,7 @@ void loop() {                                  // Create loop that checks if a b
   //or transmit if in debug mode.
 
   // First turn off all LEDs
-  PORTD &= ~(1 << LED_1_BIT | 1 << LED_2_BIT | 1 << LED_3_BIT);
+  PORTD &= ~((1 << LED_1_BIT) | (1 << LED_2_BIT) | (1 << LED_3_BIT));
 
   //Check for any error conditions
   //Error: Timeout
@@ -303,13 +313,9 @@ void loop() {                                  // Create loop that checks if a b
   if (detTwoNumBubbles < detThreeNumBubbles) {
     DL_Write3(MSG_ERROR, BDE_DET3MORE);
   }
-
+  
   //Let data logger know it's a good time to save right now
   DL_Safe_To_Write();
-
-  //For debugging purposes, data can be printed while the Arduino is connected to a computer.
-  //For field deployment, keep this commented out.
-  // PrintData() defined BELOW
 
 }  // end of loop()
 
@@ -410,11 +416,12 @@ void InitializeBkgdStructs() {
 void talkToComputer() {
   DL_Flush_All();   //flush any data in the buffer
   char c = Serial.read();                 // Throw out character that got into communicate mode
+  char q;
   uint32_t startTime = millis();          // initialize startTime which is used to return to logging after a period of inactivity
   boolean talkingToComputer = true;
   PrintName();
   Serial.print("Bytes in memory: ");
-  Serial.println((((uint32_t)DL_Page_Write_Addr()) << 8 ) + DL_Buffer_Wr_Pos());  // Number of data points stored on EEPROM chip
+  Serial.println((((uint32_t)DL_Page_Write_Addr()) << 8) + DL_Buffer_Wr_Pos());  // Number of data points stored on EEPROM chip        break;
   Serial.println("COMMANDS: B: Stored bytes R: Read X: Delete E: Exit");
   while (talkingToComputer) {
     if (Serial.available() > 0) {
@@ -437,27 +444,35 @@ void talkToComputer() {
         break;
       case 'R':
         uint16_t i;
+        /**Serial.println(DL_Page_Read_Addr());
+        Serial.println(DL_Page_Write_Addr());
+        Serial.println(DL_Buffer_Wr_Pos());
+        **/
         while (DL_Read_Page())
         {
           for (i = 0; i < 256; i++)
             Serial.write(DL_get_value(i));
         }
+        DL_Reset_Read_Addr();
         break;
-      case 'X':
+      case 'X':  //send X to delete known data
+      case 'Y':  //send Y to do a complete overwrite of the EEPROM - really only needed in debugging
         Serial.println("Delete?(Y/N)");     // Verify user wants to delete all data, Y = yes and N = no (or any other character
         while (Serial.available() == 0) {
           if (millis() - startTime > 60000)
             break;
         }
-        c = Serial.read();
-        if (c == 'Y') {
+        q = Serial.read();
+        if (q == 'Y') {
           Serial.print("Deleting...");
-          DL_Clear_Memory(0);
+          DL_Clear_Memory(c - 'X') ;
           Serial.println("Done");
         }
         else {
           Serial.println("Cancel");
         }
+        break;
+      default:
         break;
     }  //end switch
   }   //end while

@@ -24,7 +24,7 @@ static volatile uint8_t *temp_buffer;
 static volatile uint8_t buf_wr_pos;
 static uint16_t page_wr_addr;
 static uint16_t page_rd_addr;
-static uint8_t addr_buf[3];
+static volatile uint8_t addr_buf[3];	//is changed in ISR during reads
 static volatile uint8_t ready_to_save_flag;
 
 static volatile unsigned char TWI_state = TWI_NO_STATE;      // State byte. Default set to TWI_NO_STATE.
@@ -78,9 +78,9 @@ void DL_Initialise(void)
 					i += SIZE_DET3_END + 1;
 					break;
 				case MSG_ERROR:
-					i += SIZE_ERROR;
-					break;
-				default:
+					i += SIZE_ERROR+1;
+					break;					
+				default:	//really should never get here
 					i++;
 					break;
 			}
@@ -105,8 +105,7 @@ void DL_Initialise(void)
 //else, it just erases up through the last write
 void DL_Clear_Memory( uint8_t total_clear){
 	
-	sbi(PORTB, 5);
-	uint16_t max_page_wr_addr = page_wr_addr;
+	uint16_t max_page_wr_addr = page_wr_addr+1;
 	if(total_clear)
 		max_page_wr_addr = MAX_PAGE_VALUE-1;
 
@@ -125,9 +124,7 @@ void DL_Clear_Memory( uint8_t total_clear){
 	page_rd_addr = 0;
 	page_wr_addr = 0;
 	buf_wr_pos = 0;
-	ready_to_save_flag = 0;
-	cbi(PORTB, 5);
-	
+	ready_to_save_flag = 0;	
 }
 
 void DL_Write_Page( void )
@@ -136,7 +133,7 @@ void DL_Write_Page( void )
 			return;
 	//set select and address bytes
   while ( TWI_Transceiver_Busy() );             // Wait until TWI is ready for next transmission.
-	addr_buf[0] = (uint8_t) (DEV_ADDR | (page_wr_addr>>8)<<1);	//highest three bits of address, bit shifted left 1 for r/w bit
+	addr_buf[0] = (uint8_t) (DEV_ADDR | ((page_wr_addr>>8)<<1));	//highest three bits of address, bit shifted left 1 for r/w bit
 	addr_buf[1] = (uint8_t)(page_wr_addr);
 	addr_buf[2] = (uint8_t) 0;	//always at start of page
 	page_wr_addr++;	//increment write page address
@@ -161,7 +158,7 @@ uint8_t DL_Read_Page( void )
   while ( TWI_Transceiver_Busy() );             // Wait until TWI is ready for next transmission.	
 	if (page_rd_addr > page_wr_addr)
 		return 0;
-  addr_buf[0] = (uint8_t) (DEV_ADDR | (page_rd_addr>>8)<<1);	//highest three bits of address, bit shifted left 1 for r/w bit
+  addr_buf[0] = (uint8_t) (DEV_ADDR | ((page_rd_addr>>8)<<1));	//highest three bits of address, bit shifted left 1 for r/w bit
 	addr_buf[1] = (uint8_t)(page_rd_addr);
 	addr_buf[2] = (uint8_t) 0;	//always at start of page
 	page_rd_addr++;	//increment write page address
@@ -177,6 +174,11 @@ uint8_t DL_Read_Page( void )
 	while ( TWI_Transceiver_Busy() );             // Wait until TWI is ready for next transmission.
 	return 1;	
 	}
+
+void DL_Reset_Read_Addr( void ){
+	page_rd_addr = 0;
+}
+
 
 /***************************************
 Called from main application to write a 
@@ -305,6 +307,7 @@ uint8_t DL_Flush_All( void ){
 			wr_buffer[i] = 255;
 		swap_buffers();
 		DL_Write_Page();
+		page_wr_addr--;	//decrement because we wrote before the page was full
 		swap_buffers();	//we want to swap back so that if the user keeps storing data,
 										//it's in the correct buffer at the correct position buf_wr_pos
 		ready_to_save_flag = 0;	//swap_buffers set this to 1, but that data was actually already written so ignore
@@ -314,7 +317,7 @@ uint8_t DL_Flush_All( void ){
 }
 
 uint8_t DL_get_value(uint8_t index){
-	return *(rd_buffer+index);
+	return rd_buffer[index];
 }
 /****************************************************************************
 Call this function to test if the TWI_ISR is busy transmitting.
@@ -431,7 +434,6 @@ ISR(TWI_vect)
 //    case TWI_NO_STATE              // No relevant state information available; TWINT = “0”
     case TWI_BUS_ERROR:         // Bus error due to an illegal START or STOP condition
     default:
-			cbi(PORTB, 5);
       TWI_state = TWSR;                                 // Store TWSR and automatically sets clears noErrors bit.
                                                         // Reset TWI Interface
       TWCR = (1<<TWEN)|                                 // Enable TWI-interface and release TWI pins

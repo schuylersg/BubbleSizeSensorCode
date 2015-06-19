@@ -27,12 +27,12 @@ Date: 			6/15/2015
 //DEFINE THE SIZE OF EACH MESSAGE (in bytes)
 #define SIZE_EVENT_START 	10       //one uint32_t for millis and three uint16_t for the avg detector values
 #define SIZE_EVENT_END 		4	 //time just before sleep (1 uint32_t) millis()
-#define SIZE_DET1_START		4	 //time
-#define SIZE_DET2_START		4	 //time
-#define SIZE_DET3_START		4	 //time
-#define SIZE_DET1_END	        4        //time
-#define SIZE_DET2_END		4        //time
-#define SIZE_DET3_END		4        //time
+#define SIZE_DET1_START		4	 //time in microseconds
+#define SIZE_DET2_START		4	 //time in microseconds
+#define SIZE_DET3_START		4	 //time in microseconds
+#define SIZE_DET1_END	        4        //time in microseconds
+#define SIZE_DET2_END		4        //time in microseconds
+#define SIZE_DET3_END		4        //time in microseconds
 #define SIZE_ERROR		1	 //8-bit error code
 
 #define NUM_BKGD_POINTS  8 	//the number of background points to store
