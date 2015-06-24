@@ -141,7 +141,7 @@ void loop() {                                  // Create loop that checks if a b
 
     //Take ADC reading
     sbi(LED_1_PORT, LED_1_BIT);                // Turn on the LED for detector 1
-
+    
     //Check if it is time to take a background reading and if so turn on the other detector LEDs
     if (bkgdCounter == BKGD_STORAGE) {
       sbi(LED_2_PORT, LED_2_BIT);;          // Turn on the LED for detector 2
