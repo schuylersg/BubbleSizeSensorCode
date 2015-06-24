@@ -58,6 +58,9 @@ const uint16_t BKGD_STORAGE = 1000;          // Store every BKGD_STORAGE ADC rea
  *****************************************************************************************/
 unsigned long eventStartTime;        //stores time (millis) when event begins
 unsigned long timeoutClockStart = 0;
+unsigned long timeOfLastTimeout = 0;
+uint8_t numberTimeouts = 0;
+const uint8_t MAX_NUM_TIMEOUTS = 5;
 
 //Each of the detectors has a state variable. The detector is always either
 //waiting to see the start of a bubble (LOOK_FOR_START) or waiting to see
@@ -111,7 +114,8 @@ void setup() {
 
   //Start EEPROM data logger
   DL_Initialise();
-
+  DL_Write3(MSG_ERROR, BDE_RESET);
+  
   //Text to appear at the beginning of serial communication
   Serial.print((((uint32_t)DL_Page_Write_Addr()) << 8) + DL_Buffer_Wr_Pos());  // Number of data points stored on EEPROM chip
   Serial.println(" data bytes found in memory");
@@ -282,6 +286,17 @@ void loop() {                                  // Create loop that checks if a b
   //Error: Timeout
   if ((tempTime - timeoutClockStart > MAX_TIMEOUT)) {
     DL_Write3(MSG_ERROR, BDE_TIMEOUT);
+    if ((tempTime - timeOfLastTimeout) < (MAX_TIMEOUT*2)){
+      numberTimeouts++;
+    }else{
+      numberTimeouts = 1;
+    }
+    timeOfLastTimeout = tempTime; 
+  }
+  if(numberTimeouts >= MAX_NUM_TIMEOUTS){
+    DL_Write3(MSG_ERROR, TOOMANYTIMEOUTS);
+    InitializeBkgdStructs();
+    numberTimeouts = 0;
   }
 
   // Error: Neither detector 2 or 3 saw a bubble, 01000000
@@ -404,6 +419,9 @@ void InitializeBkgdStructs() {
   detOneBkgd.pos = 0;
   detTwoBkgd.pos = 0;
   detThreeBkgd.pos = 0;
+  detOneBkgd.total = 0;
+  detTwoBkgd.total = 0;
+  detThreeBkgd.total = 0;
   UpdateBkgd(&detOneBkgd, 0);
   UpdateBkgd(&detTwoBkgd, 0);
   UpdateBkgd(&detThreeBkgd, 0);
@@ -421,8 +439,8 @@ void talkToComputer() {
   boolean talkingToComputer = true;
   PrintName();
   Serial.print("Bytes in memory: ");
-  Serial.println((((uint32_t)DL_Page_Write_Addr()) << 8) + DL_Buffer_Wr_Pos());  // Number of data points stored on EEPROM chip        break;
-  Serial.println("COMMANDS: B: Stored bytes R: Read X: Delete E: Exit");
+  Serial.println((((uint32_t)DL_Page_Write_Addr()) << 8) + DL_Buffer_Wr_Pos());  // Number of data points stored on EEPROM chip        
+  Serial.println("COMMANDS: B: Stored bytes D: Background R: Read T: Show Time X: Delete E: Exit");
   while (talkingToComputer) {
     if (Serial.available() > 0) {
       c = Serial.read();
@@ -439,21 +457,28 @@ void talkToComputer() {
       case 'B':
         Serial.print((((uint32_t)DL_Page_Write_Addr()) << 8) + DL_Buffer_Wr_Pos());  // Number of data points stored on EEPROM chip        break;
         break;
+      case 'D':
+        PrintBackground(&detOneBkgd);
+        PrintBackground(&detTwoBkgd);
+        PrintBackground(&detThreeBkgd);
+        break;
       case 'E':  //exit
         talkingToComputer = false;
         break;
       case 'R':
         uint16_t i;
-        /**Serial.println(DL_Page_Read_Addr());
-        Serial.println(DL_Page_Write_Addr());
-        Serial.println(DL_Buffer_Wr_Pos());
-        **/
         while (DL_Read_Page())
         {
           for (i = 0; i < 256; i++)
             Serial.write(DL_get_value(i));
         }
         DL_Reset_Read_Addr();
+        break;
+      case 'T':
+        Serial.print("Current millis(): ");
+        Serial.println(millis());
+        Serial.print("Current micros(): ");
+        Serial.println(micros());
         break;
       case 'X':  //send X to delete known data
       case 'Y':  //send Y to do a complete overwrite of the EEPROM - really only needed in debugging
@@ -488,5 +513,23 @@ void PrintName() {
   Serial.print(HW_VERSION);
   Serial.print(" FW: v");
   Serial.println(FW_VERSION);
+}
+
+void PrintBackground(backgrounddata * bkgd){
+  uint8_t c;
+  for (c = 0; c <NUM_BKGD_POINTS; c++){
+    Serial.print(bkgd->rb[c]);
+    Serial.print(' '); 
+  }
+  Serial.println();
+  Serial.print(bkgd->minvalue);
+  Serial.print(' ');
+  Serial.print(bkgd->maxvalue);
+  Serial.print(' ');
+  Serial.print(bkgd->total);
+  Serial.print(' ');
+  Serial.print(bkgd->startdetvalue);
+  Serial.print(' ');
+  Serial.println(bkgd->enddetvalue);
 }
 

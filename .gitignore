@@ -41,3 +41,6 @@ $RECYCLE.BIN/
 Network Trash Folder
 Temporary Items
 .apdisk
+*.csv
+BubbleDetector/weird bubble output.txt
+BubbleDetector/weird output 2.txt

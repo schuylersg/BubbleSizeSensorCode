@@ -47,6 +47,8 @@ Date: 			6/15/2015
 #define BDE_DET3NOEND    6
 #define BDE_FALSESTART  7
 #define BDE_MEMORY      8
+#define BDE_RESET 9
+#define TOOMANYTIMEOUTS 10
 
 
 /*************************************************
