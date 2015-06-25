@@ -44,3 +44,7 @@ Temporary Items
 *.csv
 BubbleDetector/weird bubble output.txt
 BubbleDetector/weird output 2.txt
+*.data
+BubbleSensorReader/Bubble_Data_Wed_Jun_24_21-05-38_2015.raw
+*.raw
+BubbleSensorReader/Info

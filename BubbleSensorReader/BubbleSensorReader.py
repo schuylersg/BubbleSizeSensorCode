@@ -53,7 +53,7 @@ if __name__ == "__main__":
 
     PARSER = argparse.ArgumentParser(description='GUI for programming and testing CMT Tags.')
     PARSER.add_argument('--port', type=str, dest='port', required=True, default="Info", help='Serial Com Port (e.g. COM4)')
-    PARSER.add_argument('--file', type=str, dest='filename', required=False, default="Info", help='Data output file name')
+    PARSER.add_argument('--file', type=str, dest='filename', required=False, default="", help='Data output file name')
     ARGS = PARSER.parse_args()
 
     filename = ARGS.filename
@@ -77,6 +77,7 @@ if __name__ == "__main__":
     if "Bubble Size Sensor" not in ser_data:
         print "Unable to connect to bubble sensor"
         print "Read: %s" % ser_data
+        ser.close()
         exit(0)
 
     while True:
@@ -91,8 +92,13 @@ if __name__ == "__main__":
                 data = "".join((data, ser.read(ser.inWaiting())))
                 sleep(0.1)
 
-            if filename == None or isfile(filename):
+            if filename == "" or isfile(filename):
                 filename = "Bubble_Data_%s.csv" % asctime().replace(' ', '_').replace(':', '-')
+
+            filename_raw = "Bubble_Data_%s.data" % asctime().replace(' ', '_').replace(':', '-')
+            with open(filename_raw, 'w') as fr:
+                str_out = str(unpack('B'*len(data), data))
+                fr.write(str_out[1:-1]) #don't include brackets
 
             data_list = list()
             index = 0
@@ -131,11 +137,24 @@ if __name__ == "__main__":
                     elif msg_val == "MSG_DET3_END":
                         data_list[-1]["det3end"].append(msg_data[0])
                     elif msg_val == "MSG_ERROR":
-                        data_list[-1]["errors"].append(msg_data[0])
+                        try:
+                            data_list[-1]["errors"].append(msg_data[0])
+                        except:
+                            data_list.append(dict())
+                            data_list[-1]["start"] = msg_data
+                            data_list[-1]["det1start"] = list()
+                            data_list[-1]["det2start"] = list()
+                            data_list[-1]["det3start"] = list()
+                            data_list[-1]["det1end"] = list()
+                            data_list[-1]["det2end"] = list()
+                            data_list[-1]["det3end"] = list()
+                            data_list[-1]["errors"] = list()
+                            data_list[-1]["errors"].append(msg_data[0])
                 else:
                     index += 1
 
             with open(filename, 'w')as fid:
+                fid.write("det1start(us), det1end(us), det2start(us),  det2end(us), det3start(us), det3end(us), event start(ms), det1 background (adc), det2 background (adc), det3 background (adc), event end (ms), errors\n")
                 for event in data_list:
                     max_items = max(len(event["det1start"]), len(event["det2start"]), len(event["det3start"]), len(event["det1end"]), len(event["det2end"]), len(event["det3end"]))
                     for it in range(0, max_items):
@@ -163,7 +182,7 @@ if __name__ == "__main__":
                             fid.write("%s, " % event['det3end'][it])
                         except:
                             fid.write(" , ")
-                        fid.write("%s, " % str(event["start"]))
+                        fid.write("%s, " % str(event["start"])[1:-1])
                         try:
                             fid.write("%s, " % event["end"])
                         except:
